@@ -14,11 +14,16 @@ import (
 type FileMode int
 
 const (
-	DELETED FileMode = iota
+	NEW FileMode = iota + 1
 	MODIFIED
-	NEW
+	DELETED
 	MOVE_AWAY
+	COPY_AWAY
 	MOVE_HERE
+	COPY_HERE
+	MULTI_COPY
+	MESSAGE
+	CHILD
 )
 
 type diffRange struct {
@@ -49,9 +54,11 @@ type DiffLine struct {
 }
 
 type diffHunk struct {
-	OrigRange diffRange
-	NewRange  diffRange
+	OrigRange   diffRange
+	NewRange    diffRange
 	ModifyRange diffRange
+	OldOffset   string
+	NewOffset   string
 }
 
 type DiffFile struct {
@@ -62,6 +69,7 @@ type DiffFile struct {
 	NewMode  string
 	Binary   bool
 	Hunks    []*diffHunk
+	Away     []string
 }
 
 type Diff struct {
@@ -124,6 +132,7 @@ func Parse(diffString string) (*Diff, error) {
 	var diff Diff
 	diff.Raw = diffString
 	lines := strings.Split(diffString, "\n")
+
 	var file *DiffFile
 	var hunk *diffHunk
 	var ADDEDCount int
@@ -146,24 +155,26 @@ func Parse(diffString string) (*Diff, error) {
 			file.NewName = strings.TrimPrefix(s, "b/")
 			diff.Files = append(diff.Files, file)
 			// File mode.
-			file.Mode = MODIFIED
-		case strings.HasPrefix(l, "old mode ") :
+			if file.Mode == 0 {
+				file.Mode = MODIFIED
+			}
+		case strings.HasPrefix(l, "old mode "):
 			file.OldMode = strings.TrimPrefix(l, "old mode ")
-		case strings.HasPrefix(l, "new mode ") :
+		case strings.HasPrefix(l, "new mode "):
 			file.NewMode = strings.TrimPrefix(l, "new mode ")
-		case strings.HasPrefix(l, "new file mode ") :
+		case strings.HasPrefix(l, "new file mode "):
 			file.NewMode = strings.TrimPrefix(l, "new file mode ")
-		case strings.HasPrefix(l, "deleted file mode") :
+		case strings.HasPrefix(l, "deleted file mode"):
 			file.OldMode = strings.TrimPrefix(l, "deleted file mode ")
-		case l == "+++ /dev/null" && inHunk == false :
+		case l == "+++ /dev/null" && inHunk == false:
 			file.Mode = DELETED
-		case l == "--- /dev/null" && inHunk == false :
+		case l == "--- /dev/null" && inHunk == false:
 			file.Mode = NEW
 		case strings.HasPrefix(l, oldFilePrefix) && inHunk == false:
 			file.OrigName = strings.TrimPrefix(l, oldFilePrefix)
 		case strings.HasPrefix(l, newFilePrefix) && inHunk == false:
 			file.NewName = strings.TrimPrefix(l, newFilePrefix)
-		case strings.HasPrefix(l, "Binary files") :
+		case strings.HasPrefix(l, "Binary files"):
 			s := strings.Fields(l)
 			file.Binary = true
 			file.OrigName = strings.TrimPrefix(s[2], "a/")
@@ -176,24 +187,53 @@ func Parse(diffString string) (*Diff, error) {
 				file.NewName = ""
 				file.Mode = DELETED
 			}
-		case strings.HasPrefix(l, "rename from"):
-			s := strings.Fields(l)
-			file.NewName = s[len(s)-1]
-			file.OrigName = ""
-			file.Mode = MOVE_AWAY
+
+		case strings.HasPrefix(l, "copy to"):
+			file.Mode = COPY_HERE
+			oldFile := diff.searchFile(file.OrigName)
+			if oldFile != nil {
+				if oldFile.Mode == MOVE_AWAY {
+					oldFile.Mode = MULTI_COPY
+				} else {
+					oldFile.Mode = COPY_AWAY
+				}
+				s := strings.Fields(l)
+				oldFile.Away = append(oldFile.Away, s[len(s)-1])
+			} else {
+				oldFile = &DiffFile{}
+				oldFile.NewName = file.OrigName
+				oldFile.Mode = COPY_AWAY
+				oldFile.Away = append(oldFile.Away, file.NewName)
+				hunk = &diffHunk{}
+				oldFile.Hunks = append(oldFile.Hunks, hunk)
+				diff.Files = append(diff.Files, oldFile)
+			}
+
 			hunk = &diffHunk{}
 			file.Hunks = append(file.Hunks, hunk)
 		case strings.HasPrefix(l, "rename to"):
-			s := strings.Fields(l)
-			name := file.NewName
-			file.OrigName = s[len(s)-1]
-			// Start a new file.
-			file = &DiffFile{}
 			file.Mode = MOVE_HERE
-			diff.Files = append(diff.Files, file)
-			file.NewName = s[len(s)-1]
-			file.OrigName = name
 			// Start new hunk.
+			oldFile := diff.searchFile(file.OrigName)
+			if oldFile != nil {
+				if oldFile.Mode == MULTI_COPY {
+					// no change
+				} else if oldFile.Mode == MOVE_AWAY {
+					oldFile.Mode = MULTI_COPY
+				} else if oldFile.Mode == COPY_AWAY {
+					oldFile.Mode = MULTI_COPY
+				}
+
+				oldFile.Away = append(oldFile.Away, file.NewName)
+			} else {
+				oldFile = &DiffFile{}
+				oldFile.NewName = file.OrigName
+				oldFile.Mode = MOVE_AWAY
+				oldFile.Away = append(oldFile.Away, file.NewName)
+				hunk = &diffHunk{}
+				oldFile.Hunks = append(oldFile.Hunks, hunk)
+				diff.Files = append(diff.Files, oldFile)
+			}
 			hunk = &diffHunk{}
 			file.Hunks = append(file.Hunks, hunk)
 		case strings.HasPrefix(l, "@@ ") && inHunk == false:
@@ -207,6 +247,8 @@ func Parse(diffString string) (*Diff, error) {
 			// Parse hunk heading for ranges
 			re := regexp.MustCompile(`@@ \-(\d+),?(\d+)? \+(\d+),?(\d+)? @@`)
 			m := re.FindStringSubmatch(l)
+			hunk.OldOffset = m[1]
+			hunk.NewOffset = m[3]
 			a, err := strconv.Atoi(m[1])
 			if err != nil {
 				return nil, err
@@ -251,10 +293,10 @@ func Parse(diffString string) (*Diff, error) {
 			hunkLineCount++
 			if l == `\ No newline at end of file` {
 				line := DiffLine{
-				//Mode:     *m,
-				Content:  l,
-				//Position: hunkLineCount,
-			}
+					//Mode:     *m,
+					Content: l,
+					//Position: hunkLineCount,
+				}
 				hunk.ModifyRange.Lines = append(hunk.ModifyRange.Lines, &line)
 				break
 			}
@@ -305,11 +347,20 @@ func Parse(diffString string) (*Diff, error) {
 }
 
 func isSourceLine(line string) bool {
-	if line == `\ No newline at end of file` {
+	if line == `\ No newline at end of file` || line == `\n` {
 		return true
 	}
 	if l := len(line); l == 0 {
 		return false
 	}
 	return true
+}
+
+func (d Diff) searchFile(fileName string) *DiffFile {
+	for _, file := range d.Files {
+		if file.NewName == fileName {
+			return file
+		}
+	}
+	return nil
 }
