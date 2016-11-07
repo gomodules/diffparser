@@ -46,3 +46,8 @@ More Examples
 -------------
 
 See diffparser_test.go for further examples.
+
+
+Credits
+-------
+This repository started as a fork of https://github.com/waigani/diffparser .
