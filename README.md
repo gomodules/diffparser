@@ -1,6 +1,6 @@
 [![CLA assistant](https://cla-assistant.io/readme/badge/appscode/diffparser)](https://cla-assistant.io/appscode/diffparser)
 
-[Website](https://appscode.com) • [Slack](https://appscode.slack.com) • [Forum](https://discuss.appscode.com) • [Twitter](https://twitter.com/AppsCodeHQ)
+[Website](https://appscode.com) • [Slack](https://slack.appscode.com) • [Forum](https://discuss.appscode.com) • [Twitter](https://twitter.com/AppsCodeHQ)
 
 DiffParser
 ===========
